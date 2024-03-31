@@ -1,0 +1,591 @@
+/**
+ * Check IBD sample
+ *
+ * Jun 4, 2012 created by Zhe Wang
+ * 2021.11 Bei-Zhen Hu testing
+ */
+#include "ExamTruth.h"
+
+#include "CLHEP/Units/SystemOfUnits.h"
+#include "DetDesc/Material.h"
+// for SimHit
+#include "Event/SimHitHeader.h"
+#include "Event/SimHitCollection.h"
+#include "Event/SimPmtHit.h"
+#include "Event/SimHit.h"
+// for history info
+//#include "Event/SimParticleHistoryHeader.h"
+#include "Event/SimParticleHistory.h"
+#include "Event/SimUnobservableStatisticsHeader.h"
+#include "Event/SimStatistic.h"
+// for RecHeader
+#include "Event/RecHeader.h"
+
+using namespace std;
+using namespace DayaBay;
+
+ExamTruth::ExamTruth(const std::string& name, ISvcLocator* pSvcLocator):
+    GaudiAlgorithm(name, pSvcLocator)
+{
+    declareProperty("RootFile", mRootFile = "test.TWin.root", "Output root file name");
+    declareProperty("XYZCorr",  Corr = 0, "By default no correction");
+
+    mRZCorr = new RZCorr;
+    mXYCorr = new XYCorr;
+}
+
+ExamTruth::~ExamTruth()
+{
+}
+
+StatusCode ExamTruth::initialize()
+{
+    mDetSimCycle = -1;
+    mTree = new EventTree( "Event", mRootFile.c_str(), 0);
+
+    m_dbOil1 = getDet<IDetectorElement>("/dd/Structure/AD/db-oil1");
+    m_dbLso1 = getDet<IDetectorElement>("/dd/Structure/AD/db-lso1");
+
+    // Material definitions
+    m_Oil = getDet<Material>( "/dd/Materials/MineralOil");
+    m_Lso = getDet<Material>( "/dd/Materials/LiquidScintillator");
+    m_Gds = getDet<Material>( "/dd/Materials/GdDopedLS");
+    m_Acr = getDet<Material>( "/dd/Materials/Acrylic");
+    m_Sst = getDet<Material>( "/dd/Materials/StainlessSteel");
+    m_Alk = getDet<Material>( "/dd/Materials/Bialkali");
+    m_Pyr = getDet<Material>( "/dd/Materials/Pyrex");
+    m_Esr = getDet<Material>( "/dd/Materials/ESR");  
+
+
+    // Detector Element definitions
+    m_dyb    = getDet<IDetectorElement>("/dd/Structure/DayaBay");
+    m_dbOil1 = getDet<IDetectorElement>("/dd/Structure/AD/db-oil1");
+    m_dbLso1 = getDet<IDetectorElement>("/dd/Structure/AD/db-lso1");
+    m_dbGds1 = getDet<IDetectorElement>("/dd/Structure/AD/db-gds1");
+    m_dbIav1 = getDet<IDetectorElement>("/dd/Structure/AD/db-iav1");
+    m_dbOav1 = getDet<IDetectorElement>("/dd/Structure/AD/db-oav1");
+    m_dbSst1 = getDet<IDetectorElement>("/dd/Structure/AD/db-sst1");
+    //m_dbTube = getDet<IDetectorElement>("/dd/Structure/AD/db-ad1-calibTubeA-gdlsInLs");
+    m_target_de_name = getDet<IDetectorElement>("/dd/Structure/AD/db-ade1/db-sst1/db-oil1");
+    m_Rshield = 2259.15;
+    m_ZreflectorTop = 2104.5;
+    m_ZreflectorBottom = -2027.45;
+
+    this->GaudiAlgorithm::initialize();
+    return StatusCode::SUCCESS;
+}
+
+StatusCode ExamTruth::execute()
+{
+    /// The reconstructed info
+    /// ----------------------
+    /* AdSimple has been tried. The grid structure is too obvious. */
+    RecHeader* pRecHeader = get<RecHeader>( "/Event/Rec/AdSimple" );
+    if(!pRecHeader) {
+        error()<<"Failed to get RecHeader"<<endreq;
+        return StatusCode::FAILURE;
+    }
+
+    /// Get RecTrigger
+    const RecTrigger* pRecTrigger = &(pRecHeader->recTrigger());
+    if(!pRecTrigger) {
+        error()<<"Failed to get RecTrigger"<<endreq;
+        return StatusCode::FAILURE;
+    }
+    int ThisRecCycle = pRecHeader->execNumber();
+    info()<<"----------------------execRecNumber---"<<ThisRecCycle<<endreq;
+
+    /// Trigger time
+    TimeStamp TrigTime ( pRecTrigger->triggerTime().GetSec(), pRecTrigger->triggerTime().GetNanoSec() );
+    double E = pRecTrigger->energy();
+    double recX = pRecTrigger->position().x();
+    double recY = pRecTrigger->position().y();
+    double recZ = pRecTrigger->position().z();
+
+    double X,Y,Z,R2;
+
+    double recR2 = pow(recX,2)+pow(recY,2);
+
+    if( Corr ) {
+        //mXYCorr->Correct( recX, recY, X, Y );
+        X = recX;
+        Y = recY;
+        mRZCorr->Correct( recZ, recR2, Z, R2 );
+    } else {
+        X = recX;
+        Y = recY;
+        Z = recZ;
+        R2 = recR2;
+    }
+    info()<<"--- E --- "<<E<<endreq;
+
+    //cout<<"ReconINFO: "<<E<<endl;
+    /// Find its MC truth info
+    /// ----------------------
+    const vector<const IHeader*> IList = pRecHeader->findHeaders( SimHeader::classID() );
+    if( IList.size() == 0 )  {
+        warning()<<"Failed to get its corresponding SimHeaders. Skipped."<<endreq;
+        return StatusCode::SUCCESS;
+    }
+    if( IList.size() >= 2 )  {
+        warning()<<"Get more than 1 SimHeaders. Skipped to avoid ambiguity."<<endreq;
+        return StatusCode::SUCCESS;
+    }
+
+    /// Get the only one SimHeader
+    const SimHeader* pSimHeader = dynamic_cast<const SimHeader*>( *(IList.begin()) );
+    int ThisSimCycle = pSimHeader->execNumber();
+    info()<<"--------- SimCycle --- "<<ThisSimCycle<<endreq;
+
+    //Get UnObservable Statistics info
+    const DayaBay::SimUnobservableStatisticsHeader* pUnobs =
+        pSimHeader->unobservableStatistics();
+    const DayaBay::SimUnobservableStatisticsHeader::stat_map&
+        statmap = pUnobs->stats();
+    DayaBay::SimUnobservableStatisticsHeader::stat_map::const_iterator
+        st, stdone = statmap.end();
+
+    /// Find tCap
+    /// ---------
+    double tCap;  /* in ns */
+    double xCap, yCap, zCap, capTarget;
+
+    /// Positron info
+    int pdgId_Trk1;
+    double x_Trk1, y_Trk1, z_Trk1, e_Trk1;
+
+    if( !pUnobs ) {
+        warning()<<"Failed to get SimParticleHistory. Skipped."<<endreq;
+        return StatusCode::SUCCESS;
+
+    } else {
+
+        /// About neutron capture
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="tCap")   tCap = st->second.mean();
+            info() << "(string) map.first = " << st->first  << " , (SimStatistic) map.second = " << st->second.mean() << endreq;
+        }
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="xCap")   xCap = st->second.mean();
+        }
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="yCap")   yCap = st->second.mean();
+        }
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="zCap")   zCap = st->second.mean();
+        }
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="capTarget")   capTarget = st->second.mean();
+        }
+
+        /// About positron initial info
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="pdgId_Trk1")   pdgId_Trk1 = (int)st->second.mean();
+        }
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="e_Trk1")   e_Trk1 = st->second.mean();
+        }
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="x_Trk1")   x_Trk1 = st->second.mean();
+        }
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="y_Trk1")   y_Trk1 = st->second.mean();
+        }
+        for (st=statmap.begin(); st != stdone; ++st) {
+            if(st->first=="z_Trk1")   z_Trk1 = st->second.mean();
+        }
+
+    }
+
+    /// Check parentPDG
+    int PDG0;
+    //PDG0 = 
+
+    /// Just confirm track 1 is positron
+    if( pdgId_Trk1 != -11 )  {
+        warning()<<"Track 1 is not positron. Can't get positron truth. Skipped."<<endreq;
+        //return StatusCode::SUCCESS;
+    }
+
+    /// Truth vertex transformation to local cooridinates.
+    Gaudi::XYZPoint GblGen( x_Trk1, y_Trk1, z_Trk1 );
+    Gaudi::XYZPoint LclGen = m_dbOil1->geometry()->toLocal( GblGen );
+
+    Gaudi::XYZPoint GblCap( xCap, yCap, zCap );
+    Gaudi::XYZPoint LclCap = m_dbOil1->geometry()->toLocal( GblCap );
+
+    ////
+    Gaudi::XYZPoint LclThis = m_dyb->geometry()->toLocal( GblGen );
+    string genPart = m_dyb->geometry()->belongsToPath( LclThis, -1 );
+    IDetectorElement *genDe = getDet<IDetectorElement>( genPart );
+    string genDetMar = genDe->geometry()->lvolume()->material()->name();
+    int    CrrDepVol  = 0;
+
+    if (genDetMar=="GdDopedLS") {
+        CrrDepVol = 1;
+    }else if (genDetMar=="LiquidScintillator") {
+        CrrDepVol = 2;
+    }else if (genDetMar=="Acrylic") {
+        CrrDepVol = 3;
+    }else if (genDetMar=="MineralOil") {
+        CrrDepVol = 4;
+    }else {
+        CrrDepVol = 0;
+    }
+    ////
+    Gaudi::XYZPoint LcCapThis = m_dyb->geometry()->toLocal( GblCap );
+    string capPart = m_dyb->geometry()->belongsToPath( LcCapThis, -1 );
+    IDetectorElement *capDe = getDet<IDetectorElement>( capPart );
+    string capDetMar = capDe->geometry()->lvolume()->material()->name();
+    int    CapDepVol  = 0;
+    /*
+       cout<<"---- TEST code ---- m_dyb: "<<capDetMar<<endl;
+       Gaudi::XYZPoint LcCapThis2 = m_dbOil1->geometry()->toLocal( GblCap );
+       string capPart2 = m_dbOil1->geometry()->belongsToPath( LcCapThis, -1 );
+       IDetectorElement *capDe2 = getDet<IDetectorElement>( capPart2 );
+       string capDetMar2 = capDe2->geometry()->lvolume()->material()->name();
+       cout<<"---- TEST code ---- m_dbOil1: "<<capDetMar2<<endl;
+       */
+
+    if (capDetMar=="GdDopedLS") {
+        CapDepVol = 1;
+    }else if (capDetMar=="LiquidScintillator") {
+        CapDepVol = 2;
+    }else if (capDetMar=="Acrylic") {
+        CapDepVol = 3;
+    }else if (capDetMar=="MineralOil") {
+        CapDepVol = 4;
+    }else {
+        CapDepVol = 0;
+    }
+
+
+    //cout<<CrrDepVol<<endl;
+    ////
+    /// CapT and GenT
+    TimeStamp GenT = pSimHeader->timeStamp();          /* Abs generation time */
+    TimeStamp CapT = GenT;  CapT.Add(tCap/1e9);        /* Abs capture time    */
+
+    static int lastSim=-1;
+    if( tCap < 1e3 )  {
+        int Sim = pSimHeader->execNumber();
+        if( Sim != lastSim ) {
+            warning()<<" One candidate with CapT<1e3 ns "<<endreq;
+            lastSim = Sim;
+        }
+        warning()<<"CapT and GenT are too closed. Skipped."<<endreq;
+        //return StatusCode::SUCCESS;
+    }
+
+    /// The first interaction vertex of the 2.2 MeV gamma
+    const DayaBay::SimParticleHistory* pHist = pSimHeader->particleHistory();
+
+    if( !pHist ) {
+        warning()<<"Can't get the history info"<<endreq;
+        return StatusCode::SUCCESS;
+    }
+
+
+    // Search for the 2.2 MeV SimTrack
+    const std::list<DayaBay::SimTrack*>& trk=pHist->tracks();
+    std::list<DayaBay::SimTrack*>::const_iterator tkci, tkEnd=trk.end();
+    std::list<DayaBay::SimTrack*>::const_iterator tkBegin=trk.begin();
+    SimTrackReference ParentTrk = (*tkBegin)->ancestorTrack();  // arbitrary initialization to first track (positron)
+
+    int ParentPartID = 0;
+    int ParentTrkID  = 0;
+    int gammaN = 0;
+    info()<<" list size: "<<trk.size()<<endreq;
+    SimTrack* InteristTrack = 0;
+    for(tkci = trk.begin(); tkci != tkEnd; tkci++ ) {
+        InteristTrack = *tkci;
+
+        info()<<"-----------  trackID: "<<(*tkci)->trackId()<<endreq;
+        info()<<" TEST particle ID: "<<(*tkci)->particle()<<endreq;
+        info()<<" TEST Parent ID: "<<(*tkci)->parentParticle()<<endreq;
+        //info()<<" TEST Parent TrkID: "<<(*tkci)->ancestorTrack()<<endreq;
+        ParentTrk    = (*tkci)->ancestorTrack();
+        if( ParentTrk.track() == NULL ) {
+            ParentTrkID  = 0;
+            ParentPartID = 0;
+        }
+        else {
+            ParentTrkID = ParentTrk.track()->trackId();
+            ParentPartID = ParentTrk.track()->particle();
+            info()<<" TEST parentTrkID and PdgID: "<<ParentTrkID<<"\t"<<ParentPartID<<endreq;
+            info()<<" TEST ancesProcess and parentPdgID: "<<(*tkci)->ancestorVertex().vertex()->process().name()<<"\t"<<ParentPartID<<endreq;
+        }    
+        //info()<<" TEST Ancestor Vtx Process: "<<(*tkci)->ancestorVertex()<<endreq;
+        info()<<" TEST vertex: "<<(*tkci)->vertices().size()<<endreq;
+
+        /// Looking for the first interaction point
+        double dE_chk =0;
+        int parID = (*tkci)->particle();
+        //if(parID==2112 || parID==-11 || parID==11 ){
+            info()<<"===== vertex ======= "<<parID<<endreq;
+            //info()<<" TEST particle ID: "<<(*tkci)->particle()<<endreq;
+            //info()<<" TEST Parent ID: "<<(*tkci)->parentParticle()<<endreq;
+            gammaN++; 
+            const vector<SimVertex*>& GamVtx = (*tkci)->vertices();
+            const SimVertex* FirstComptonVtx = nullptr;
+            Gaudi::XYZPoint  AveGammaVtx(0,0,0);
+            double ETotal, EAtLastVtx, ELoss;
+            int vn = GamVtx.size()-1;
+            double dTvtx = (GamVtx[vn]->time())-(GamVtx[0]->time());
+            double dEvtx = (GamVtx[0]->totalEnergy())-(GamVtx[vn]->totalEnergy());
+            //info()<<dTvtx<<"\t"<<GamVtx[0]->process().name()<<"--->"<<GamVtx[vn]->process().name() <<"\t"<<dEvtx<<endreq;
+            info() << "--------------Start to print all--------------" << endreq;
+            for(vector<SimVertex*>::const_iterator Vtxptr = GamVtx.begin(); Vtxptr!=GamVtx.end(); Vtxptr++){
+                info() << (*Vtxptr)->kineticEnergy() << endreq;
+            }
+            info() << "==============Ending==============" << endreq;
+            int gprocessID = 999;
+            int gproCount[9] = {0};
+
+            for(int lpiVx = 0; lpiVx< GamVtx.size() ; lpiVx++ ) {
+                string physProcess = GamVtx[lpiVx]->process().name();
+                double dEvtx_i = 0;
+                if(lpiVx>0) dEvtx_i = (GamVtx[lpiVx-1]->totalEnergy())-(GamVtx[lpiVx]->totalEnergy());
+                info()<<lpiVx<<" -- physProcess --- "<<physProcess<<"\t"<<dEvtx_i<<endl;
+                dE_chk += dEvtx_i;
+                if (physProcess == "LowEnCompton"){
+                    gprocessID = 1;
+                }else if(physProcess == "LowEnRayleigh"){
+                    gprocessID = 2;
+
+                }else if(physProcess == "LowEnPhotoElec"){
+                    gprocessID = 3;
+
+                }else if(physProcess == "LowEnergyIoni"){
+                    gprocessID = 3;
+
+                }else if(physProcess == "Cerenkov"){
+                    gprocessID = 4;
+
+                }else if(physProcess == "OpAbsorption"){
+                    gprocessID = 5;
+
+                }else if(physProcess == "OpRayleigh"){
+                    gprocessID = 6;
+
+                }else {
+                    gprocessID = 0;
+                    info()<<"--- other process: "<<GamVtx[lpiVx]->process().name()<<endreq; 
+
+                }
+
+                gproCount[gprocessID]++;
+                //double vtCap = GamVtx[vn]->time();
+                //TimeStamp CapT2 = GenT;  CapT2.Add(vtCap/1e9);    
+                //cout<<" compareT: "<<abs((TrigTime-CapT2).GetSeconds())<<endl;
+                info()<<"-- vtx info ---"<<endreq;
+                double vtxX = GamVtx[lpiVx]->position().x();
+                double vtxY = GamVtx[lpiVx]->position().y();
+                double vtxZ = GamVtx[lpiVx]->position().z();
+
+                Gaudi::XYZPoint GblPvtx( vtxX, vtxY, vtxZ );
+                Gaudi::XYZPoint LclPvtx = m_dyb->geometry()->toLocal( GblPvtx );
+
+
+                string gPart = m_dyb->geometry()->belongsToPath( LclPvtx, -1 );
+                IDetectorElement *gDect = getDet<IDetectorElement>( gPart );
+                string gAbsDetMar = gDect->geometry()->lvolume()->material()->name();
+                int    gAbsDepVol  = 0;
+                int pV = -1;
+
+                string VolumeName = m_dbOil1->geometry()->belongsToPath( LclPvtx,-1 );
+                if(VolumeName == "/dd/Structure/AD/db-oil1/db-oav1/db-lso1/db-iav1/db-gds1")
+                    pV = 1;
+                else if(VolumeName == "/dd/Structure/AD/db-oil1/db-oav1/db-lso1/db-iav1")
+                    pV = 2;
+                else if(VolumeName == "/dd/Structure/AD/db-oil1/db-oav1/db-lso1")
+                    pV = 3;
+                else if(VolumeName == "/dd/Structure/AD/db-oil1/db-oav1")
+                    pV = 4;
+                else if(VolumeName == "/dd/Structure/AD/db-oil1")
+                    pV = 6;
+                else
+                    pV = 7;
+
+                if (gAbsDetMar=="GdDopedLS") {
+                    gAbsDepVol = 1;
+                }else if (gAbsDetMar=="LiquidScintillator") {
+                    gAbsDepVol = 2;
+                }else if (gAbsDetMar=="Acrylic") {
+                    gAbsDepVol = 3;
+                }else if (gAbsDetMar=="MineralOil") {
+                    gAbsDepVol = 4;
+                }else {
+                    gAbsDepVol = 0;
+                }
+
+                info()<<"position: "<<gAbsDetMar<<"\t"<<pV<<endreq;
+            }
+            cout<<"===== check dE ==== "<<dE_chk<<endl;
+            for(int iProc = 0; iProc<7;iProc++) info()<<iProc<<"\t"<<gproCount[iProc]<<endreq;
+        //}
+    }
+    info()<<" gamma counting: "<<gammaN<<endreq;
+    /**/
+
+    /// Finish an event and restart
+    /// ---------------------------
+
+    //cout<<"--- finish check: "<<ThisSimCycle<<"\t"<<mDetSimCycle<<endl;
+    if( ThisSimCycle != mDetSimCycle )  {
+        if( mDetSimCycle != -1 )  {
+            EndEvent();
+        }
+        mDetSimCycle = ThisSimCycle;
+        mEvent.Reset();
+    }
+
+    //cout<<"--------  preTest: "<<abs((TrigTime-GenT).GetSeconds())<<" "<<abs((TrigTime-CapT).GetSeconds())<<endl;
+    /// Positron branch
+    /// ---------------
+    if( abs((TrigTime-GenT).GetSeconds()) < 0.1e-6 ) {
+
+        /* Is this a bug to set it to 1 here? */
+        /* Always set positron to the first?  */
+        mEvent.Fold = 1;
+
+        //cout<<"-- check code --- Positron: "<<abs((TrigTime-GenT).GetSeconds())<<" num of Fold: "<<mEvent.Fold<<endl;
+        // AddElectron
+        mEvent.TrigSec[0]  = TrigTime.GetSec();
+        mEvent.TrigNano[0] = TrigTime.GetNanoSec();
+        mEvent.E[0]        = E;
+        mEvent.X[0]        = X;
+        mEvent.Y[0]        = Y;
+        mEvent.Z[0]        = Z;
+        mEvent.D2First[0]  = 0;
+
+        // Truth
+        mEvent.TrigSecT[0]  = GenT.GetSec();
+        mEvent.TrigNanoT[0] = GenT.GetNanoSec();
+        mEvent.ET[0]        = e_Trk1 + 0.511; /* Kinetic Energy + 0.511 */
+        mEvent.XT[0]        = LclGen.x();   /* Trac 1215 */
+        mEvent.YT[0]        = LclGen.y();
+        mEvent.ZT[0]        = LclGen.z();
+        mEvent.D2FirstT[0]  = 0;
+
+    }
+
+    /// Neutron branch
+    /// --------------
+    mEvent.GenDet = CrrDepVol;
+    mEvent.CapDet = CapDepVol;
+    mEvent.CapTarget = capTarget;
+    if( abs((TrigTime-CapT).GetSeconds()) < 0.1e-6 ) {
+
+        mEvent.Fold += 1;
+        int Fold = mEvent.Fold-1;  /* for array idx */
+        //cout<<"-- check code --- Neutron: "<<abs((TrigTime-CapT).GetSeconds())<<" num of Fold: "<<mEvent.Fold<<endl;
+
+        // AddNeutron
+        double X1,Y1,Z1;
+        X1  = mEvent.X[ 0 ];
+        Y1  = mEvent.Y[ 0 ];
+        Z1  = mEvent.Z[ 0 ];
+
+        mEvent.TrigSec[Fold]  = TrigTime.GetSec();
+        mEvent.TrigNano[Fold] = TrigTime.GetNanoSec();
+        mEvent.E[Fold]        = E;
+        mEvent.X[Fold]        = X;
+        mEvent.Y[Fold]        = Y;
+        mEvent.Z[Fold]        = Z;
+        mEvent.D2First[Fold]  = sqrt( (X-X1)*(X-X1) + (Y-Y1)*(Y-Y1) + (Z-Z1)*(Z-Z1) );
+
+        // Truth
+        X1  = mEvent.XT[ 0 ];
+        Y1  = mEvent.YT[ 0 ];
+        Z1  = mEvent.ZT[ 0 ];
+
+        mEvent.TrigSecT[Fold]  = CapT.GetSec();
+        mEvent.TrigNanoT[Fold] = CapT.GetNanoSec();
+
+        mEvent.ET[Fold] = capTarget;
+        if( capTarget == 1 )   mEvent.ET[Fold] = 2.2246;
+        if( capTarget == 6 )   mEvent.ET[Fold] = 5.5;
+        if( capTarget == 64 )  mEvent.ET[Fold] = 8.1;
+
+        mEvent.XT[Fold]        = LclCap.x(); //- LclCap.x();
+        mEvent.YT[Fold]        = LclCap.y(); //- LclCap.y();
+        mEvent.ZT[Fold]        = LclCap.z();
+        mEvent.D2FirstT[Fold]  = sqrt( ( mEvent.XT[Fold]-X1)*(mEvent.XT[Fold]-X1) 
+                + (mEvent.YT[Fold]-Y1)*(mEvent.YT[Fold]-Y1) 
+                + (mEvent.ZT[Fold]-Z1)*(mEvent.ZT[Fold]-Z1) );
+
+        mEvent.XDepC[Fold]      = 0;//- LclDepC.x();
+        mEvent.YDepC[Fold]      = 0;//- LclDepC.y();
+        mEvent.ZDepC[Fold]      = 0;//LclDepC.z();
+
+        mEvent.T2PrevSubEvt[Fold] = (mEvent.TrigSecT[Fold]-mEvent.TrigSecT[Fold-1])+
+            (mEvent.TrigNanoT[Fold]-mEvent.TrigNanoT[Fold-1])*1e-9;
+    }
+
+    return StatusCode::SUCCESS;
+}
+
+StatusCode ExamTruth::finalize()
+{
+    mTree->Close();
+    return this->GaudiAlgorithm::finalize();
+}
+
+StatusCode ExamTruth::EndEvent()
+{
+    mTree->Reset();
+
+    mTree->Run        = 0;
+    mTree->Det        = 0;
+
+    mTree->T2PrevMu   = 0;
+    mTree->T2PrevPlMu = 0;
+    mTree->T2PrevAdMu = 0;
+    mTree->T2PrevShMu = 0;
+    mTree->T2PrevNetMu = 0;
+
+
+    mTree->Fold       = mEvent.Fold;
+    if( mEvent.Fold > Max ) {
+        warning()<<"Number of fold is above the limit. Skipped."<<endreq;
+        return StatusCode::SUCCESS;
+    }
+
+    for( int FoldIdx = 0; FoldIdx < mEvent.Fold; FoldIdx++ )   {
+        mTree->TrigSec[FoldIdx]      = mEvent.TrigSec[FoldIdx];
+        mTree->TrigNano[FoldIdx]     = mEvent.TrigNano[FoldIdx];
+        mTree->E[FoldIdx]            = mEvent.E[FoldIdx];
+        mTree->X[FoldIdx]            = mEvent.X[FoldIdx];
+        mTree->Y[FoldIdx]            = mEvent.Y[FoldIdx];
+        mTree->Z[FoldIdx]            = mEvent.Z[FoldIdx];
+        mTree->D2First[FoldIdx]      = mEvent.D2First[FoldIdx];
+        mTree->T2PrevSubEvt[FoldIdx] = mEvent.T2PrevSubEvt[FoldIdx];
+
+        mTree->TrigSecT[FoldIdx]      = mEvent.TrigSecT[FoldIdx];
+        mTree->TrigNanoT[FoldIdx]     = mEvent.TrigNanoT[FoldIdx];
+        mTree->ET[FoldIdx]            = mEvent.ET[FoldIdx];
+        mTree->XT[FoldIdx]            = mEvent.XT[FoldIdx];
+        mTree->YT[FoldIdx]            = mEvent.YT[FoldIdx];
+        mTree->ZT[FoldIdx]            = mEvent.ZT[FoldIdx];
+        mTree->D2FirstT[FoldIdx]      = mEvent.D2FirstT[FoldIdx];
+        mTree->T2PrevSubEvtT[FoldIdx] = mEvent.T2PrevSubEvtT[FoldIdx];
+
+        mTree->XDepC[FoldIdx]          = mEvent.XDepC[FoldIdx];
+        mTree->YDepC[FoldIdx]          = mEvent.YDepC[FoldIdx];
+        mTree->ZDepC[FoldIdx]          = mEvent.ZDepC[FoldIdx];
+        mTree->CapTarget               = mEvent.CapTarget;
+        mTree->GenDet                  = mEvent.GenDet;
+        mTree->CapDet                  = mEvent.CapDet;
+    }
+
+    // For beizhen
+    if( mEvent.Fold==1 ) {
+        mTree->Fold       = 2;
+        mTree->E[1]       = 0;
+    } 
+
+    mTree->Fill();
+
+    return StatusCode::SUCCESS;
+}  

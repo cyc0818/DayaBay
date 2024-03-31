@@ -1,0 +1,33 @@
+package MyPromptEfficiencyAlg
+
+# All packages needed ...
+use DybPolicy      * 
+use DybROOT        *  External
+
+#These are from Validation/McTruthFigAlg
+use GaudiKernel        v*
+use GaudiAlg           v*
+use StatisticsSvc      v*  DybSvc
+use DetDesc            v*  Det
+use DetHelpers         v*  Detector
+use CLHEP              v*  LCG_Interfaces
+use GenEvent           v*  DataModel
+use SimEvent           v*  DataModel
+use ReadoutEvent       v*  DataModel
+#There are from Validation/DataQuality
+use DetHelpers v* Detector
+use ReadoutEvent v* DataModel
+use SimReadoutEvent v* DataModel
+use ElecEvent v* DataModel
+use SimEvent v* DataModel
+use GenEvent v* DataModel
+use UserData  v* DataModel
+
+include_path none
+
+library MyPromptEfficiencyAlg *.cc
+
+apply_pattern component_library library=MyPromptEfficiencyAlg
+
+apply_pattern install_scripts
+apply_pattern install_python_modules

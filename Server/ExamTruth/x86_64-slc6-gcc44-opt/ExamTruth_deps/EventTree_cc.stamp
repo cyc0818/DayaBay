@@ -1,0 +1,1 @@
+EventTree_cc_dependencies =  ../src/EventTree.cc   /afs/.ihep.ac.cn/soft/dayabay/NuWa-slc6/NuWa-3.x.x-opt/external/ROOT/5.26.00e_python2.7/x86_64-slc6-gcc44-opt/root/include/Type.h   ../src/EventTree.h  $(bin)ExamTruth_deps/EventTree_cc.stamp

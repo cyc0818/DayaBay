@@ -1,0 +1,1 @@
+RZCorr_cc_dependencies =  ../src/RZCorr.cc   ../src/RZCorr.h   /afs/.ihep.ac.cn/soft/dayabay/NuWa-slc6/NuWa-3.x.x-opt/external/ROOT/5.26.00e_python2.7/x86_64-slc6-gcc44-opt/root/include/Type.h  $(bin)ExamTruth_deps/RZCorr_cc.stamp
